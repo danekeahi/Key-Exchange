@@ -1,0 +1,78 @@
+name: Verify PR
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          ALL_FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+          echo "all_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$ALL_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Filter for keys/*.asc
+          KEY_FILES=$(echo "$ALL_FILES" | grep '^keys/.*\.asc$' || true)
+          echo "key_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$KEY_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Check for disallowed files
+        run: |
+          ALL_FILES="${{ steps.changed-files.outputs.all_files }}"
+          
+          if [ -z "$ALL_FILES" ]; then
+            echo "No files changed"
+            exit 0
+          fi
+          
+          DISALLOWED=0
+          
+          for file in $ALL_FILES; do
+            # Allow: keys/*.asc, signed/*/*.asc
+            if [[ "$file" =~ ^keys/[^/]+\.asc$ ]]; then
+              echo "✅ Allowed: $file"
+            elif [[ "$file" =~ ^signed/[^/]+/[^/]+\.asc$ ]]; then
+              echo "✅ Allowed: $file"
+            else
+              echo "❌ Disallowed: $file"
+              DISALLOWED=$((DISALLOWED + 1))
+            fi
+          done
+          
+          if [ $DISALLOWED -gt 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "❌ PR contains disallowed files!"
+            echo "Only allowed:"
+            echo "  - keys/<netid>.asc"
+            echo "  - signed/<your-netid>/<other-netid>.asc"
+            echo "=========================================="
+            exit 1
+          fi
+
+      - name: Verify new keys have course signature
+        run: |
+          KEY_FILES="${{ steps.changed-files.outputs.key_files }}"
+          
+          if [ -z "$KEY_FILES" ]; then
+            echo "No new keys to verify"
+            exit 0
+          fi
+          
+          python scripts/verify_key.py $KEY_FILES
